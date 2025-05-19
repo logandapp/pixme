@@ -1,13 +1,28 @@
 from PIL import Image
 import numpy as np
+from scipy.ndimage import convolve
+from scipy.signal import find_peaks
+from scipy.stats import mode
 import random
 
 from pydantic import FilePath
 
+CUTOFF_PERCENTILE = 95
+TILE_CUTOFF = 0.07
 MIN_TILE_SIZE = 16
 MAX_TILE_SIZE = 256
+KERNEL = np.ones((64, 64)) / (64*64)
+EPS = 1e-8
 
-def pad_to_power_of_two_square(arr: np.ndarray, random_pad: bool = True) -> np.ndarray:
+def pad_to_power_of_two_square(arr: np.ndarray, random_pad: bool = True) -> np.ndarray | None:
+
+    empty_images = np.sum(arr, axis=(1, 2, 3)) == 0
+    arr = np.delete(arr, empty_images, axis=0)
+    empty_x = np.sum(arr, axis=(0, 1, 3)) == 0
+    arr = np.delete(arr, empty_x, axis=2)
+    empty_y = np.sum(arr, axis=(0, 2, 3)) == 0
+    arr = np.delete(arr, empty_y, axis=1)
+
     _, h, w = arr.shape[:3]
 
     # Step 1: Crop if too big
@@ -17,7 +32,7 @@ def pad_to_power_of_two_square(arr: np.ndarray, random_pad: bool = True) -> np.n
     if random_pad and w > MAX_TILE_SIZE:
         off_x = random.randint(0, w - MAX_TILE_SIZE - 1)
 
-    cropped = arr[off_y:min(h, MAX_TILE_SIZE)+off_y, off_x:min(w, MAX_TILE_SIZE)+off_x]
+    cropped = arr[:, off_y:min(h, MAX_TILE_SIZE)+off_y, off_x:min(w, MAX_TILE_SIZE)+off_x]
     _, h, w = cropped.shape[:3]
 
     # Step 2: Find next power of two for both dimensions (not exceeding max_size)
@@ -68,29 +83,81 @@ class ImageData:
 
     def create_tiles(self):
         h, w, _ = self.image.shape
-        t_x, t_y = self._detect_periodic()
+        t_y, t_x = self._detect_periodic()
 
-        n_h = h // t_y
-        n_w = w // t_x
+        t_x = self.__round_tiling(w, t_x)
+        t_y = self.__round_tiling(h, t_y)
 
-        if h % t_y != 0 or n_h < MIN_TILE_SIZE: t_y, n_h = 1, h
-        if w % t_x != 0 or n_w < MIN_TILE_SIZE: t_x, n_w = 1, w
+        n_w, n_h = w // t_x, h // t_y
 
         return pad_to_power_of_two_square(self.image.reshape(t_y, n_h, t_x, n_w, 4).transpose(0, 2, 1, 3, 4).reshape(t_y*t_x, n_h, n_w, 4))
 
     @staticmethod
+    def __round_tiling(s: int, t: int):
+        if np.isnan(t):
+            return 1
+
+        appr = s / round(s / t)
+        if appr % 1:
+            return 1
+
+        if abs(t - appr) / appr <= TILE_CUTOFF:
+            if s // t >= MIN_TILE_SIZE:
+                return round(appr)
+
+            # Just in the chance that there's a vertical pattern that's throwing us off.
+            elif appr % 4 == 0 and s // t >= MIN_TILE_SIZE // 4:
+                return round(appr / 4)
+            elif appr % 2 == 0 and s // t >= MIN_TILE_SIZE // 2:
+                return round(appr / 2)
+
+        return 1
+
+    @staticmethod
     def __vertical_channel_fft(c_data: np.ndarray) -> np.ndarray:
-        return np.sum(np.abs(np.fft.fft(c_data - np.mean(c_data, axis=0, keepdims=True), axis=0)), axis=1)
+        return np.fft.fft(c_data, axis=0)
 
     @staticmethod
     def __horizontal_channel_fft(c_data: np.ndarray) -> np.ndarray:
-        return np.sum(np.abs(np.fft.fft(c_data - np.mean(c_data, axis=1, keepdims=True), axis=1)), axis=0)
+        return np.fft.fft(c_data, axis=1)
+
+    @staticmethod
+    def __reduce_parallel_fft(fft_data: np.ndarray, axis: int) -> np.ndarray:
+        return np.sum(np.abs(fft_data), axis=axis)
+
+    @staticmethod
+    def __extract_dominant_frequency(fft_data: np.ndarray, fft_freqs: np.ndarray) -> int:
+        spectra = np.abs(fft_data)
+        spectra[spectra < np.percentile(spectra, CUTOFF_PERCENTILE)] = 0.0
+        freqs = np.diff(np.sort(fft_freqs[find_peaks(spectra)[0]]))
+        freqs = freqs[freqs >= MIN_TILE_SIZE // 4]
+        if freqs.size:
+            return mode(freqs).mode
+        return fft_freqs[np.argmax(spectra)]
 
     def _detect_periodic(self):
-        v_fft = self.__vertical_channel_fft(self.grayscale)
-        v_freqs = np.fft.fftfreq(v_fft.shape[0], 1.0 / v_fft.shape[0])
+        pixel_mask = convolve(self.image[:, :, 3], KERNEL, mode='nearest').astype(bool).astype(float)  # alpha mask
 
-        h_fft = self.__horizontal_channel_fft(self.grayscale)
-        h_freqs = np.fft.fftfreq(h_fft.shape[0], 1.0 / h_fft.shape[0])
+        v_freqs = np.fft.fftfreq(pixel_mask.shape[0], 1.0 / pixel_mask.shape[0])
+        h_freqs = np.fft.fftfreq(pixel_mask.shape[1], 1.0 / pixel_mask.shape[1])
+        v_tot = None
+        h_tot = None
 
-        return round(abs(h_freqs[np.argmax(h_fft)])), round(abs(v_freqs[np.argmax(v_fft)]))
+        for channel in [self.image[:, :, 0], self.image[:, :, 1], self.image[:, :, 2]]:
+            pixel_img = channel * pixel_mask / 255
+
+            v_fft = self.__vertical_channel_fft(pixel_img)
+            v_fmask = self.__vertical_channel_fft(pixel_mask)
+            v_fnorm = v_fft / (v_fmask + EPS)
+            v_trans = self.__reduce_parallel_fft(v_fnorm, axis=1)
+            if v_tot is None: v_tot = v_trans
+            else: v_tot += v_trans
+
+            h_fft = self.__horizontal_channel_fft(pixel_img)
+            h_fmask = self.__horizontal_channel_fft(pixel_mask)
+            h_fnorm = h_fft / (h_fmask + EPS)
+            h_trans = self.__reduce_parallel_fft(h_fnorm, axis=0)
+            if h_tot is None: h_tot = h_trans
+            else: h_tot += h_trans
+
+        return self.__extract_dominant_frequency(v_trans, v_freqs), self.__extract_dominant_frequency(h_trans, h_freqs)

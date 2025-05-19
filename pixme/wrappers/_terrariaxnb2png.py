@@ -8,9 +8,10 @@ from pydantic import FilePath
 from .libpath import get_lib_path
 from ..utils.path import generate_random_string
 
-def decompile_xnbs(top: FilePath, copy_to: FilePath = '.') -> bool:
+def decompile_xnbs(top: FilePath, copy_to: FilePath = '.', verbose: bool = True) -> bool:
     overall_success = False
     display_top = os.path.split(top)[1]
+    print('Decoding Terraria assets...')
     for current_folder, _, files in os.walk(top):
         xnbs = []
         for file in files:
@@ -20,7 +21,9 @@ def decompile_xnbs(top: FilePath, copy_to: FilePath = '.') -> bool:
         if xnbs:
             display_current = _prune_path(display_top, current_folder)
             os.makedirs(os.path.join(copy_to, display_current), exist_ok=True)
+            if verbose: print(f'    Decoding .xnb to .png (Terraria asset) of `{current_folder}`...', end='')
             success = _decompile_xnbs(xnbs, os.path.join(copy_to, display_current))
+            if verbose: print(f' [Done]')
             if not success:
                 warnings.warn(f'Could not convert {current_folder} from .xnb to .png')
             else:
@@ -80,7 +83,7 @@ def _decompile_xnbs(xnbs: list[str], copy_to: FilePath = '.') -> bool:
 
     split_xnbs = _split_files(xnbs)
     for sxnbs in split_xnbs:
-        p = subprocess.run([os.path.join(get_lib_path(), 'TerrariaXNB2PNG'), *sxnbs])
+        p = subprocess.run([os.path.join(get_lib_path(), 'TerrariaXNB2PNG'), *sxnbs], stdout=subprocess.DEVNULL)
     for file in os.listdir(get_lib_path()):
         if os.path.splitext(file)[1] == '.xnb': os.remove(os.path.join(get_lib_path(), file))
     names = [os.path.split(os.path.splitext(xnb)[0])[1] for xnb in xnbs]

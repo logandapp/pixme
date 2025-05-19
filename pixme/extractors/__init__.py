@@ -11,11 +11,14 @@ from .ExtractorBase import ExtractorBase
 from pydantic import FilePath
 from typing import List, Type
 
+def skip_preexisting(folder: FilePath = "data/image"):
+    for path in os.listdir(folder):
+        ExtractorBase.banned_extractors.add(os.path.split(path)[1])
 
-def convert_preexisting(folder: FilePath = "data/image", outdir: FilePath = "data") -> List[Type[ExtractorBase]]:
+def convert_preexisting(folder: FilePath = "data/image") -> List[Type[ExtractorBase]]:
     extractors = []
     for path in os.listdir(folder):
-        extractors.append(PreexistingExtractor(path, outdir=outdir))
+        extractors.append(PreexistingExtractor(path, outdir=os.path.dirname(folder)))
     return extractors
 
 def convert_executables(folder: FilePath, outdir: FilePath = "data") -> List[Type[ExtractorBase]]:

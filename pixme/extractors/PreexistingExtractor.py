@@ -6,6 +6,7 @@ from .ExtractorBase import ExtractorBase
 from ..utils.path import validate_folder
 
 class PreexistingExtractor(ExtractorBase):
+
     def __init__(self, folder_id: str = None, outdir: FilePath = "data"):
         super().__init__(folder_id, outdir)
 

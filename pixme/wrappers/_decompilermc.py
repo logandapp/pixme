@@ -7,11 +7,13 @@ from pydantic import FilePath
 from .libpath import get_lib_path
 from ..utils.path import get_file_from_extension, generate_temporary_folder_name, get_singleton_subfolder, copy_entity
 
-def decompile_minecraft(version: str = 'latest', copy_to: FilePath = '.', delete_versions: bool = True) -> bool:
+def decompile_minecraft(version: str = 'latest', copy_to: FilePath = '.', verbose: bool = True) -> bool:
     if not os.path.exists(copy_to) or not os.path.isdir(copy_to):
         raise NotADirectoryError(f'Directory `{copy_to}` does not exist.')
     mc_path = os.path.join(get_lib_path(), 'DecompilerMC')
-    p = subprocess.run(['python', os.path.join(mc_path, 'main.py'), '--mcversion', version, '-c', '-f'])
+    if verbose: print(f'Decompiling and Extracting Minecraft (version: {version})...', end='')
+    p = subprocess.run(['python', os.path.join(mc_path, 'main.py'), '--mcversion', version, '-c', '-f'], stdout=subprocess.DEVNULL)
+    if verbose: print(f' [Done]')
     src_path = os.path.join(mc_path, 'src')
 
     shutil.copytree(os.path.join(src_path, os.listdir(src_path)[0]), copy_to, dirs_exist_ok=True)

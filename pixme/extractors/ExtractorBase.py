@@ -15,7 +15,7 @@ from .NullExtractor import NullExtractor
 from ..utils.image import copy_images_recursively
 from ..utils.misc import find_partition
 
-MIN_DATASET_SIZE = 16
+MIN_DATASET_SIZE = 4
 
 class ExtractorBase(ABC):
 
